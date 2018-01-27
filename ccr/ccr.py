@@ -22,6 +22,21 @@ def base64_decode(value):
     return base64.b64decode(value).decode()
 
 
+class JinjaEnv(object):
+
+    allow_undefined = False
+
+    @classmethod
+    def get_env(cls):
+        if cls.allow_undefined:
+            env = Environment()
+        else:
+            env = Environment(undefined=StrictUndefined)
+        env.globals['ccr_extras'] = CcrExtras()
+        env.filters['b64decode'] = base64_decode
+        return env
+
+
 def get_vault_credentials(service_name='hsdp-vault'):
     vcap_services = json.loads(os.getenv('VCAP_SERVICES', None))
     if not vcap_services:
@@ -49,13 +64,7 @@ def get_vault_secret(url, path, role_id, secret_id):
 
 
 def render_template(template, secrets, undefined=False):
-    if undefined:
-        env = Environment()
-    else:
-        env = Environment(undefined=StrictUndefined)
-    env.globals['ccr_extras'] = CcrExtras()
-    env.filters['b64decode'] = base64_decode
-    return env.from_string(template).render(**secrets)
+    return JinjaEnv.get_env().from_string(template).render(**secrets)
 
 
 def get_secrets_from_env(templates):
@@ -68,7 +77,7 @@ def get_secrets_from_env(templates):
             print("ERROR: Could not open file {0}.  Exiting.".format(filename))
             sys.exit(1)
         template_vars = meta.find_undeclared_variables(
-            Environment().parse(jinja_string)
+            JinjaEnv.get_env().parse(jinja_string)
         )
         for var in template_vars:
             if var in os.environ:
@@ -188,6 +197,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    JinjaEnv.allow_undefined = args.allow_undefined
     if args.from_env:
         secrets = get_secrets_from_env(args.template)
     else:
