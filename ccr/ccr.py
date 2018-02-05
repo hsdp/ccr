@@ -56,7 +56,7 @@ def get_secrets_from_env(templates):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group()
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         '--from-env',
         dest='from_env',
