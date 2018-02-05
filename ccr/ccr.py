@@ -2,13 +2,12 @@
 
 import os
 import sys
-import json
 import socket
 import base64
 import argparse
-import hvac
 from jinja2.exceptions import UndefinedError
 from jinja2 import Environment, StrictUndefined, meta
+import ccr_vault
 
 
 class CcrExtras(object):
@@ -16,10 +15,6 @@ class CcrExtras(object):
     def __init__(self):
         self.local_addr = socket.gethostbyname(socket.gethostname())
         self.loopback_addr = '127.0.0.1'
-
-
-def base64_decode(value):
-    return base64.b64decode(value).decode()
 
 
 class JinjaEnv(object):
@@ -33,34 +28,8 @@ class JinjaEnv(object):
         else:
             env = Environment(undefined=StrictUndefined)
         env.globals['ccr_extras'] = CcrExtras()
-        env.filters['b64decode'] = base64_decode
+        env.filters['b64decode'] = lambda x: base64.b64decode(x).decode()
         return env
-
-
-def get_vault_credentials(service_name='hsdp-vault'):
-    vcap_services = json.loads(os.getenv('VCAP_SERVICES', None))
-    if not vcap_services:
-        raise EnvironmentError('VCAP_SERVICES does not exist.')
-    if service_name not in vcap_services:
-        raise EnvironmentError('Vault service instance does not exist.')
-    service_instance = vcap_services.get(service_name)
-    for item in service_instance:
-        if 'credentials' in item:
-            credentials = item.get('credentials')
-            break
-    else:
-        raise EnvironmentError('Credentials missing in VCAP_SERVICES.')
-    return credentials
-
-
-def get_vault_secret(url, path, role_id, secret_id):
-    client = hvac.Client(url=url)
-    _ = client.auth_approle(role_id, secret_id)
-    data = client.read(path)
-    if not isinstance(data['data'], dict):
-        print('ERROR: Vault data is not a JSON dictionary!')
-        sys.exit(1)
-    return data['data']
 
 
 def render_template(template, secrets, undefined=False):
@@ -208,14 +177,14 @@ def main():
             creds['role_id'] = args.role_id
             creds['secret_id'] = args.secret_id
         elif args.vcap:
-            vcap_creds = get_vault_credentials()
+            vcap_creds = ccr_vault.get_vault_credentials()
             vcap_path = vcap_creds[''.join([args.vcap, '_secret_path'])]
             path = '/'.join('/'.join([vcap_path, args.path]).split('/')[2:])
             creds['url'] = vcap_creds['endpoint']
             creds['path'] = path
             creds['role_id'] = vcap_creds['role_id']
             creds['secret_id'] = vcap_creds['secret_id']
-        secrets = get_vault_secret(**creds)
+        secrets = ccr_vault.get_vault_secret(**creds)
         if args.merge_with_env:
             secrets.update(get_secrets_from_env(args.template))
     if not args.allow_null:
