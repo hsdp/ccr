@@ -41,7 +41,7 @@ associated help.
 
 
 Templating Extras
-=========
+=================
 CCR provides a couple of extra funtions to templates to make converting
 templates from salt-stack a bit easier.
 
@@ -62,7 +62,7 @@ cert: |
 ```
 
 Using Vault with CCR
-==========
+====================
 The configuration values are expected to be stored as JSON key/value pairs in
 Vault.  Configuration can be pulled from Vault in two ways.  The most generic
 way requires passing in the Vault endpoint, role-id, secret-id, and path.  This
@@ -108,11 +108,16 @@ exec /application/app_bin -c /application/config/my_config1.conf
 ```
 
 Using CCR with environment variables
-==================
+====================================
 The most simple way to use CCR is with environment variables.  The environment
 variables will be read and used to render configuration templates.  This mode
 is useful for development or simple cases where there is only a couple of
 variables.
+
+When environment variables are used templates are inspected to discover the
+variables that they require and only matching environment variables are pulled
+into the rendering process.  This helps prevent pulling in extra or potentially
+dangerous variables.
 
 **Example entrypoint script using environment variables:**
 ```
