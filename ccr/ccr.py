@@ -18,10 +18,6 @@ class CcrExtras(object):
         self.loopback_addr = '127.0.0.1'
 
 
-def base64_decode(value):
-    return base64.b64decode(value).decode()
-
-
 class JinjaEnv(object):
 
     allow_undefined = False
@@ -33,16 +29,20 @@ class JinjaEnv(object):
         else:
             env = Environment(undefined=StrictUndefined)
         env.globals['ccr_extras'] = CcrExtras()
-        env.filters['b64decode'] = base64_decode
+        env.filters['b64decode'] = lambda x: base64.b64decode(x).decode()
         return env
 
 
-def get_vault_credentials(service_name='hsdp-vault'):
-    vcap_services = json.loads(os.getenv('VCAP_SERVICES', None))
-    if not vcap_services:
-        raise EnvironmentError('VCAP_SERVICES does not exist.')
+def get_vcap_credentials(service_name='hsdp-vault'):
+    vcap_services = os.getenv('VCAP_SERVICES', None)
+    if vcap_services:
+        vcap_services = json.loads(vcap_services)
+    else:
+        print('ERROR: VCAP_SERVICES does not exist.')
+        sys.exit(1)
     if service_name not in vcap_services:
-        raise EnvironmentError('Vault service instance does not exist.')
+        print('ERROR: Vault service instance does not exist.')
+        sys.exit(1)
     service_instance = vcap_services.get(service_name)
     for item in service_instance:
         if 'credentials' in item:
@@ -53,7 +53,7 @@ def get_vault_credentials(service_name='hsdp-vault'):
     return credentials
 
 
-def get_vault_secret(url, path, role_id, secret_id):
+def get_vault_secrets(url, path, role_id, secret_id):
     client = hvac.Client(url=url)
     _ = client.auth_approle(role_id, secret_id)
     data = client.read(path)
@@ -61,10 +61,6 @@ def get_vault_secret(url, path, role_id, secret_id):
         print('ERROR: Vault data is not a JSON dictionary!')
         sys.exit(1)
     return data['data']
-
-
-def render_template(template, secrets, undefined=False):
-    return JinjaEnv.get_env().from_string(template).render(**secrets)
 
 
 def get_secrets_from_env(templates):
@@ -85,9 +81,33 @@ def get_secrets_from_env(templates):
     return secrets
 
 
+def check_null(secrets):
+    null_values = [k for (k, v) in secrets.items() if v is None]
+    if null_values:
+        print('ERROR: The following variables have None values: '
+              '{0}.  Exiting.').format(",".join(null_values))
+        sys.exit(1)
+
+
+def render_templates(templates, secrets):
+    for template in templates:
+        source, destination = template.split(':')
+        try:
+            with open(source, 'r') as s:
+                with open(destination, 'w') as d:
+                    d.write(JinjaEnv.get_env().from_string(
+                        s.read()).render(**secrets))
+        except IOError:
+            print('ERROR: Unable to access {0}. Exiting.'.format(source))
+            sys.exit(1)
+        except UndefinedError as undefined:
+            print('ERROR: {0}'.format(undefined.message))
+            sys.exit(1)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group()
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         '--from-env',
         dest='from_env',
@@ -144,7 +164,6 @@ def parse_args():
         '--template',
         dest='template',
         action='append',
-        required=True,
         help=('This argument can be used multiple time to render multiple '
               'files.  The templates are expected to exist on the local '
               'filesystem.  An example value for this would be '
@@ -184,6 +203,20 @@ def parse_args():
               'ignored if used with `--from-env`.  Only variables that are '
               'discovered in templates will be merged in.')
     )
+    parser.add_argument(
+        '--vault-to-env',
+        dest='vault_to_env',
+        action='store_true',
+        help=('This flag will cuase CCR to pull secrets from Vault and create '
+              'environment variables from the result.  Data is assumed to be '
+              'JSON key/value string pairs in Vault.')
+    )
+    parser.add_argument(
+        '--out-file',
+        dest='out_file',
+        default='/dev/shm/environment',
+        help=argparse.SUPPRESS
+    )
     args = parser.parse_args()
     if args.endpoint:
         if args.role_id is None or args.secret_id is None or args.path is None:
@@ -192,6 +225,14 @@ def parse_args():
     if args.vcap:
         if args.path is None:
             parser.error('--vcap requires --path')
+        else:
+            creds = get_vcap_credentials()
+            args.endpoint = creds['endpoint']
+            vcap_path = creds[''.join([args.vcap, '_secret_path'])]
+            args.path = '/'.join(
+                '/'.join([vcap_path, args.path]).split('/')[2:])
+            args.role_id = creds['role_id']
+            args.secret_id = creds['secret_id']
     return args
 
 
@@ -200,42 +241,23 @@ def main():
     JinjaEnv.allow_undefined = args.allow_undefined
     if args.from_env:
         secrets = get_secrets_from_env(args.template)
-    else:
-        creds = {'url': None, 'path': None, 'role_id': None, 'secret_id': None}
-        if args.endpoint:
-            creds['url'] = args.endpoint
-            creds['path'] = args.path
-            creds['role_id'] = args.role_id
-            creds['secret_id'] = args.secret_id
-        elif args.vcap:
-            vcap_creds = get_vault_credentials()
-            vcap_path = vcap_creds[''.join([args.vcap, '_secret_path'])]
-            path = '/'.join('/'.join([vcap_path, args.path]).split('/')[2:])
-            creds['url'] = vcap_creds['endpoint']
-            creds['path'] = path
-            creds['role_id'] = vcap_creds['role_id']
-            creds['secret_id'] = vcap_creds['secret_id']
-        secrets = get_vault_secret(**creds)
+    elif args.endpoint or args.vcap:
+        secrets = get_vault_secrets(
+            url=args.endpoint,
+            path=args.path,
+            role_id=args.role_id,
+            secret_id= args.secret_id
+        )
         if args.merge_with_env:
             secrets.update(get_secrets_from_env(args.template))
-    if not args.allow_null:
-        null_values = [k for (k,v) in secrets.items() if v is None]
-        if null_values:
-            print('ERROR: The following variables have None values: '
-                  '{0}.  Exiting.').format(",".join(null_values))
-            sys.exit(1)
-    for templates in args.template:
-        template, filename = templates.split(':')
-        try:
-            with open(template, 'r') as t:
-                with open(filename, 'w') as f:
-                    f.write(render_template(t.read(), secrets))
-        except IOError:
-            print('ERROR: Unable to access {0}. Exiting.'.format(template))
-            sys.exit(1)
-        except UndefinedError as undefined:
-            print('ERROR: {0}'.format(undefined.message))
-            sys.exit(1)
+        if not args.allow_null:
+            check_null(secrets)
+    if args.vault_to_env:
+        with open(args.out_file, 'w') as f:
+            for k, v in secrets.items():
+                f.write('export {0}={1}\n'.format(k, v))
+    else:
+        render_templates(args.template, secrets)
 
 
 if __name__ == '__main__':
