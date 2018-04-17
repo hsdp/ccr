@@ -54,7 +54,8 @@ def get_vcap_credentials(service_name='hsdp-vault'):
 
 
 def get_vault_secrets(url, path, role_id, secret_id):
-    client = hvac.Client(url=url)
+    verify = bool(os.environ.get('VAULT_SKIP_VERIFY', False))
+    client = hvac.Client(url=url, verify=verify)
     _ = client.auth_approle(role_id, secret_id)
     data = client.read(path)
     if not isinstance(data['data'], dict):
